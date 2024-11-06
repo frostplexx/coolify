@@ -32,6 +32,7 @@ class DeployController extends Controller
         summary: 'List',
         description: 'List currently running deployments',
         path: '/deployments',
+        operationId: 'list-deployments',
         security: [
             ['bearerAuth' => []],
         ],
@@ -79,12 +80,13 @@ class DeployController extends Controller
         summary: 'Get',
         description: 'Get deployment by UUID.',
         path: '/deployments/{uuid}',
+        operationId: 'get-deployment-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
         tags: ['Deployments'],
         parameters: [
-            new OA\Parameter(name: 'uuid', in: 'path', required: true, description: 'Deployment Uuid', schema: new OA\Schema(type: 'integer')),
+            new OA\Parameter(name: 'uuid', in: 'path', required: true, description: 'Deployment UUID', schema: new OA\Schema(type: 'string')),
         ],
         responses: [
             new OA\Response(
@@ -134,6 +136,7 @@ class DeployController extends Controller
         summary: 'Deploy',
         description: 'Deploy by tag or uuid. `Post` request also accepted.',
         path: '/deploy',
+        operationId: 'deploy-by-tag-or-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -147,7 +150,7 @@ class DeployController extends Controller
         responses: [
             new OA\Response(
                 response: 200,
-                description: 'Get deployment(s) Uuid\'s',
+                description: 'Get deployment(s) UUID\'s',
                 content: [
                     new OA\MediaType(
                         mediaType: 'application/json',
@@ -289,8 +292,8 @@ class DeployController extends Controller
             return ['message' => "Resource ($resource) not found.", 'deployment_uuid' => $deployment_uuid];
         }
         switch ($resource?->getMorphClass()) {
-            case 'App\Models\Application':
-                $deployment_uuid = new Cuid2(7);
+            case \App\Models\Application::class:
+                $deployment_uuid = new Cuid2;
                 queue_application_deployment(
                     application: $resource,
                     deployment_uuid: $deployment_uuid,
@@ -298,13 +301,13 @@ class DeployController extends Controller
                 );
                 $message = "Application {$resource->name} deployment queued.";
                 break;
-            case 'App\Models\Service':
+            case \App\Models\Service::class:
                 StartService::run($resource);
                 $message = "Service {$resource->name} started. It could take a while, be patient.";
                 break;
             default:
                 // Database resource
-                StartDatabase::dispatch($resource);
+                StartDatabase::dispatch($resource)->onQueue('high');
                 $resource->update([
                     'started_at' => now(),
                 ]);

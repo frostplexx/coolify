@@ -5,6 +5,7 @@ namespace App\Notifications\Internal;
 use App\Notifications\Channels\DiscordChannel;
 use App\Notifications\Channels\TelegramChannel;
 use App\Notifications\Channels\NtfyChannel;
+use App\Notifications\Dto\DiscordMessage;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Notification;
@@ -39,17 +40,21 @@ class GeneralNotification extends Notification implements ShouldQueue
         return $channels;
     }
 
-    public function toDiscord(): string
+    public function toDiscord(): DiscordMessage
     {
-        return $this->message;
+        return new DiscordMessage(
     }
 
+            title: 'Coolify: General Notification',
     public function toNtfy(): array
     {
         return [
             'message' => $this->message,
             'buttons' => 'view, Go to your dashboard, '.base_url().';',
         ];
+            description: $this->message,
+            color: DiscordMessage::infoColor(),
+        );
     }
 
     public function toTelegram(): array

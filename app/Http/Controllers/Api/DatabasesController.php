@@ -46,6 +46,7 @@ class DatabasesController extends Controller
         summary: 'List',
         description: 'List all databases.',
         path: '/databases',
+        operationId: 'list-databases',
         security: [
             ['bearerAuth' => []],
         ],
@@ -91,6 +92,7 @@ class DatabasesController extends Controller
         summary: 'Get',
         description: 'Get database by UUID.',
         path: '/databases/{uuid}',
+        operationId: 'get-database-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -151,6 +153,7 @@ class DatabasesController extends Controller
         summary: 'Update',
         description: 'Update database by UUID.',
         path: '/databases/{uuid}',
+        operationId: 'update-database-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -468,7 +471,6 @@ class DatabasesController extends Controller
                     $request->offsetSet('mysql_conf', $mysqlConf);
                 }
                 break;
-
         }
         $extraFields = array_diff(array_keys($request->all()), $allowedFields);
         if ($validator->fails() || ! empty($extraFields)) {
@@ -495,21 +497,21 @@ class DatabasesController extends Controller
         $database->update($request->all());
 
         if ($whatToDoWithDatabaseProxy === 'start') {
-            StartDatabaseProxy::dispatch($database);
+            StartDatabaseProxy::dispatch($database)->onQueue('high');
         } elseif ($whatToDoWithDatabaseProxy === 'stop') {
-            StopDatabaseProxy::dispatch($database);
+            StopDatabaseProxy::dispatch($database)->onQueue('high');
         }
 
         return response()->json([
             'message' => 'Database updated.',
         ]);
-
     }
 
     #[OA\Post(
         summary: 'Create (PostgreSQL)',
         description: 'Create a new PostgreSQL database.',
         path: '/databases/postgresql',
+        operationId: 'create-database-postgresql',
         security: [
             ['bearerAuth' => []],
         ],
@@ -575,6 +577,7 @@ class DatabasesController extends Controller
         summary: 'Create (Clickhouse)',
         description: 'Create a new Clickhouse database.',
         path: '/databases/clickhouse',
+        operationId: 'create-database-clickhouse',
         security: [
             ['bearerAuth' => []],
         ],
@@ -636,6 +639,7 @@ class DatabasesController extends Controller
         summary: 'Create (DragonFly)',
         description: 'Create a new DragonFly database.',
         path: '/databases/dragonfly',
+        operationId: 'create-database-dragonfly',
         security: [
             ['bearerAuth' => []],
         ],
@@ -696,6 +700,7 @@ class DatabasesController extends Controller
         summary: 'Create (Redis)',
         description: 'Create a new Redis database.',
         path: '/databases/redis',
+        operationId: 'create-database-redis',
         security: [
             ['bearerAuth' => []],
         ],
@@ -757,6 +762,7 @@ class DatabasesController extends Controller
         summary: 'Create (KeyDB)',
         description: 'Create a new KeyDB database.',
         path: '/databases/keydb',
+        operationId: 'create-database-keydb',
         security: [
             ['bearerAuth' => []],
         ],
@@ -818,6 +824,7 @@ class DatabasesController extends Controller
         summary: 'Create (MariaDB)',
         description: 'Create a new MariaDB database.',
         path: '/databases/mariadb',
+        operationId: 'create-database-mariadb',
         security: [
             ['bearerAuth' => []],
         ],
@@ -882,6 +889,7 @@ class DatabasesController extends Controller
         summary: 'Create (MySQL)',
         description: 'Create a new MySQL database.',
         path: '/databases/mysql',
+        operationId: 'create-database-mysql',
         security: [
             ['bearerAuth' => []],
         ],
@@ -945,6 +953,7 @@ class DatabasesController extends Controller
         summary: 'Create (MongoDB)',
         description: 'Create a new MongoDB database.',
         path: '/databases/mongodb',
+        operationId: 'create-database-mongodb',
         security: [
             ['bearerAuth' => []],
         ],
@@ -1142,7 +1151,7 @@ class DatabasesController extends Controller
             }
             $database = create_standalone_postgresql($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
             $database->refresh();
             $payload = [
@@ -1154,7 +1163,6 @@ class DatabasesController extends Controller
             }
 
             return response()->json(serializeApiResponse($payload))->setStatusCode(201);
-
         } elseif ($type === NewDatabaseTypes::MARIADB) {
             $allowedFields = ['name', 'description', 'image', 'public_port', 'is_public', 'project_uuid', 'environment_name', 'server_uuid', 'destination_uuid', 'instant_deploy', 'limits_memory', 'limits_memory_swap', 'limits_memory_swappiness', 'limits_memory_reservation', 'limits_cpus', 'limits_cpuset', 'limits_cpu_shares', 'mariadb_conf', 'mariadb_root_password', 'mariadb_user', 'mariadb_password', 'mariadb_database'];
             $validator = customApiValidator($request->all(), [
@@ -1198,7 +1206,7 @@ class DatabasesController extends Controller
             }
             $database = create_standalone_mariadb($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             $database->refresh();
@@ -1256,7 +1264,7 @@ class DatabasesController extends Controller
             }
             $database = create_standalone_mysql($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             $database->refresh();
@@ -1312,7 +1320,7 @@ class DatabasesController extends Controller
             }
             $database = create_standalone_redis($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             $database->refresh();
@@ -1349,7 +1357,7 @@ class DatabasesController extends Controller
             removeUnnecessaryFieldsFromRequest($request);
             $database = create_standalone_dragonfly($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             return response()->json(serializeApiResponse([
@@ -1398,7 +1406,7 @@ class DatabasesController extends Controller
             }
             $database = create_standalone_keydb($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             $database->refresh();
@@ -1434,7 +1442,7 @@ class DatabasesController extends Controller
             removeUnnecessaryFieldsFromRequest($request);
             $database = create_standalone_clickhouse($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             $database->refresh();
@@ -1492,7 +1500,7 @@ class DatabasesController extends Controller
             }
             $database = create_standalone_mongodb($environment->id, $destination->uuid, $request->all());
             if ($instantDeploy) {
-                StartDatabase::dispatch($database);
+                StartDatabase::dispatch($database)->onQueue('high');
             }
 
             $database->refresh();
@@ -1514,6 +1522,7 @@ class DatabasesController extends Controller
         summary: 'Delete',
         description: 'Delete database by UUID.',
         path: '/databases/{uuid}',
+        operationId: 'delete-database-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -1529,16 +1538,10 @@ class DatabasesController extends Controller
                     format: 'uuid',
                 )
             ),
-            new OA\Parameter(
-                name: 'cleanup',
-                in: 'query',
-                description: 'Delete configurations and volumes.',
-                required: false,
-                schema: new OA\Schema(
-                    type: 'boolean',
-                    default: true,
-                )
-            ),
+            new OA\Parameter(name: 'delete_configurations', in: 'query', required: false, description: 'Delete configurations.', schema: new OA\Schema(type: 'boolean', default: true)),
+            new OA\Parameter(name: 'delete_volumes', in: 'query', required: false, description: 'Delete volumes.', schema: new OA\Schema(type: 'boolean', default: true)),
+            new OA\Parameter(name: 'docker_cleanup', in: 'query', required: false, description: 'Run docker cleanup.', schema: new OA\Schema(type: 'boolean', default: true)),
+            new OA\Parameter(name: 'delete_connected_networks', in: 'query', required: false, description: 'Delete connected networks.', schema: new OA\Schema(type: 'boolean', default: true)),
         ],
         responses: [
             new OA\Response(
@@ -1583,10 +1586,14 @@ class DatabasesController extends Controller
         if (! $database) {
             return response()->json(['message' => 'Database not found.'], 404);
         }
+
         DeleteResourceJob::dispatch(
             resource: $database,
-            deleteConfigurations: $cleanup,
-            deleteVolumes: $cleanup);
+            deleteConfigurations: $request->query->get('delete_configurations', true),
+            deleteVolumes: $request->query->get('delete_volumes', true),
+            dockerCleanup: $request->query->get('docker_cleanup', true),
+            deleteConnectedNetworks: $request->query->get('delete_connected_networks', true)
+        )->onQueue('high');
 
         return response()->json([
             'message' => 'Database deletion request queued.',
@@ -1597,6 +1604,7 @@ class DatabasesController extends Controller
         summary: 'Start',
         description: 'Start database. `Post` request is also accepted.',
         path: '/databases/{uuid}/start',
+        operationId: 'start-database-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -1658,7 +1666,7 @@ class DatabasesController extends Controller
         if (str($database->status)->contains('running')) {
             return response()->json(['message' => 'Database is already running.'], 400);
         }
-        StartDatabase::dispatch($database);
+        StartDatabase::dispatch($database)->onQueue('high');
 
         return response()->json(
             [
@@ -1672,6 +1680,7 @@ class DatabasesController extends Controller
         summary: 'Stop',
         description: 'Stop database. `Post` request is also accepted.',
         path: '/databases/{uuid}/stop',
+        operationId: 'stop-database-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -1733,7 +1742,7 @@ class DatabasesController extends Controller
         if (str($database->status)->contains('stopped') || str($database->status)->contains('exited')) {
             return response()->json(['message' => 'Database is already stopped.'], 400);
         }
-        StopDatabase::dispatch($database);
+        StopDatabase::dispatch($database)->onQueue('high');
 
         return response()->json(
             [
@@ -1747,6 +1756,7 @@ class DatabasesController extends Controller
         summary: 'Restart',
         description: 'Restart database. `Post` request is also accepted.',
         path: '/databases/{uuid}/restart',
+        operationId: 'restart-database-by-uuid',
         security: [
             ['bearerAuth' => []],
         ],
@@ -1805,7 +1815,7 @@ class DatabasesController extends Controller
         if (! $database) {
             return response()->json(['message' => 'Database not found.'], 404);
         }
-        RestartDatabase::dispatch($database);
+        RestartDatabase::dispatch($database)->onQueue('high');
 
         return response()->json(
             [
@@ -1813,6 +1823,5 @@ class DatabasesController extends Controller
             ],
             200
         );
-
     }
 }

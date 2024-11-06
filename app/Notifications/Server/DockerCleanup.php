@@ -6,6 +6,7 @@ use App\Models\Server;
 use App\Notifications\Channels\DiscordChannel;
 use App\Notifications\Channels\TelegramChannel;
 use App\Notifications\Channels\NtfyChannel;
+use App\Notifications\Dto\DiscordMessage;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Notification;
@@ -50,19 +51,28 @@ class DockerCleanup extends Notification implements ShouldQueue
     //     $mail->view('emails.high-disk-usage', [
     //         'name' => $this->server->name,
     //         'disk_usage' => $this->disk_usage,
-    //         'threshold' => $this->cleanup_after_percentage,
+    //         'threshold' => $this->docker_cleanup_threshold,
     //     ]);
     //     return $mail;
     // }
 
-    public function toNtfy()
+    public function toDiscord(): DiscordMessage
     {
+        return new DiscordMessage(
+            title: ':white_check_mark: Server cleanup job done',
+            description: $this->message,
+            color: DiscordMessage::successColor(),
+        );
+    }
+    public function toNtfy(){
         return [
             'title' => "Coolify: Server '{$this->server->name}' cleanup job done!",
             'message' => "Coolify: Server '{$this->server->name}' cleanup job done!\n\n{$this->message}",
             'emoji' => 'wastebasket',
         ];
     }
+
+
 
     public function toDiscord(): string
     {

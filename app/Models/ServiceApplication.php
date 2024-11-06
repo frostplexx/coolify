@@ -19,6 +19,11 @@ class ServiceApplication extends BaseModel
             $service->persistentStorages()->delete();
             $service->fileStorages()->delete();
         });
+        static::saving(function ($service) {
+            if ($service->isDirty('status')) {
+                $service->forceFill(['last_online_at' => now()]);
+            }
+        });
     }
 
     public function restart()
@@ -30,6 +35,16 @@ class ServiceApplication extends BaseModel
     public static function ownedByCurrentTeamAPI(int $teamId)
     {
         return ServiceApplication::whereRelation('service.environment.project.team', 'id', $teamId)->orderBy('name');
+    }
+
+    public function isRunning()
+    {
+        return str($this->status)->contains('running');
+    }
+
+    public function isExited()
+    {
+        return str($this->status)->contains('exited');
     }
 
     public function isLogDrainEnabled()
@@ -101,5 +116,10 @@ class ServiceApplication extends BaseModel
     public function getFilesFromServer(bool $isInit = false)
     {
         getFilesystemVolumesFromServer($this, $isInit);
+    }
+
+    public function isBackupSolutionAvailable()
+    {
+        return false;
     }
 }

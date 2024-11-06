@@ -3,6 +3,7 @@
 namespace App\Notifications\Application;
 
 use App\Models\Application;
+use App\Notifications\Dto\DiscordMessage;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -43,7 +44,7 @@ class StatusChanged extends Notification implements ShouldQueue
 
     public function toMail(): MailMessage
     {
-        $mail = new MailMessage();
+        $mail = new MailMessage;
         $fqdn = $this->fqdn;
         $mail->subject("Coolify: {$this->resource_name} has been stopped");
         $mail->view('emails.application-status-changes', [
@@ -55,9 +56,11 @@ class StatusChanged extends Notification implements ShouldQueue
         return $mail;
     }
 
-    public function toDiscord(): string
+    public function toDiscord(): DiscordMessage
     {
         $message = 'Coolify: ' . $this->resource_name . ' has been stopped.
+        return new DiscordMessage(
+            title: ':cross_mark: Application stopped',
 
 ';
         $message .= '[Open Application in Coolify](' . $this->resource_url . ')';
@@ -66,6 +69,7 @@ class StatusChanged extends Notification implements ShouldQueue
     }
 
     public function toNtfy(): array
+            color: DiscordMessage::errorColor(),
     {
         $message = 'Coolify: ' . $this->resource_name . ' has been stopped.';
 

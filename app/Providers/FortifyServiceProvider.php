@@ -44,19 +44,23 @@ class FortifyServiceProvider extends ServiceProvider
     {
         Fortify::createUsersUsing(CreateNewUser::class);
         Fortify::registerView(function () {
-            $settings = view()->shared('instanceSettings');
+            $isFirstUser = User::count() === 0;
+
+            $settings = instanceSettings();
             if (! $settings->is_registration_enabled) {
                 return redirect()->route('login');
             }
             if (config('coolify.waitlist')) {
                 return redirect()->route('waitlist.index');
             } else {
-                return view('auth.register');
+                return view('auth.register', [
+                    'isFirstUser' => $isFirstUser,
+                ]);
             }
         });
 
         Fortify::loginView(function () {
-            $settings = view()->shared('instanceSettings');
+            $settings = instanceSettings();
             $enabled_oauth_providers = OauthSetting::where('enabled', true)->get();
             $users = User::count();
             if ($users == 0) {
@@ -71,7 +75,8 @@ class FortifyServiceProvider extends ServiceProvider
         });
 
         Fortify::authenticateUsing(function (Request $request) {
-            $user = User::where('email', $request->email)->with('teams')->first();
+            $email = strtolower($request->email);
+            $user = User::where('email', $email)->with('teams')->first();
             if (
                 $user &&
                 Hash::check($request->password, $user->password)

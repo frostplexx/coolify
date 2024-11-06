@@ -3,6 +3,7 @@
 namespace App\Notifications\Container;
 
 use App\Models\Server;
+use App\Notifications\Dto\DiscordMessage;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -23,7 +24,7 @@ class ContainerRestarted extends Notification implements ShouldQueue
 
     public function toMail(): MailMessage
     {
-        $mail = new MailMessage();
+        $mail = new MailMessage;
         $mail->subject("Coolify: A resource ({$this->name}) has been restarted automatically on {$this->server->name}");
         $mail->view('emails.container-restarted', [
             'containerName' => $this->name,
@@ -34,9 +35,17 @@ class ContainerRestarted extends Notification implements ShouldQueue
         return $mail;
     }
 
-    public function toDiscord(): string
+    public function toDiscord(): DiscordMessage
     {
-        $message = "Coolify: A resource ({$this->name}) has been restarted automatically on {$this->server->name}";
+        $message = new DiscordMessage(
+            title: ':warning: Resource restarted',
+            description: "{$this->name} has been restarted automatically on {$this->server->name}.",
+            color: DiscordMessage::infoColor(),
+        );
+
+        if ($this->url) {
+            $message->addField('Resource', '[Link]('.$this->url.')');
+        }
 
         return $message;
     }

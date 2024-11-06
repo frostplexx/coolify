@@ -46,9 +46,8 @@ class DockerImage extends Component
 
         $project = Project::where('uuid', $this->parameters['project_uuid'])->first();
         $environment = $project->load(['environments'])->environments->where('name', $this->parameters['environment_name'])->first();
-        ray($image, $tag);
         $application = Application::create([
-            'name' => 'docker-image-'.new Cuid2(7),
+            'name' => 'docker-image-'.new Cuid2,
             'repository_project_id' => 0,
             'git_repository' => 'coollabsio/coolify',
             'git_branch' => 'main',

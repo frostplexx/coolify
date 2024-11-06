@@ -15,15 +15,17 @@
                     <x-forms.input id="storage.host_path" readonly helper="Directory on the host system."
                         label="Source Path"
                         helper="Warning: Changing the source path after the initial start could cause problems. Only use it when you know what are you doing." />
+                    <x-forms.input id="storage.mount_path" label="Destination Path"
+                        helper="Directory inside the container." required readonly />
                 @else
                     <x-forms.input id="storage.host_path" helper="Directory on the host system." label="Source Path"
                         helper="Warning: Changing the source path after the initial start could cause problems. Only use it when you know what are you doing." />
+                    <x-forms.input id="storage.mount_path" label="Destination Path"
+                        helper="Directory inside the container." required readonly />
+                    <x-forms.button type="submit">
+                        Update
+                    </x-forms.button>
                 @endif
-                <x-forms.input id="storage.mount_path" label="Destination Path" helper="Directory inside the container."
-                    required readonly />
-                <x-forms.button type="submit">
-                    Update
-                </x-forms.button>
             @else
                 <x-forms.input id="storage.name" required readonly />
                 <x-forms.input id="storage.host_path" readonly />
@@ -44,13 +46,13 @@
                 <x-forms.button type="submit">
                     Update
                 </x-forms.button>
-                <x-modal-confirmation isErrorButton buttonTitle="Delete">
-                    This storage will be deleted <span class="font-bold dark:text-warning">{{ $storage->name }}</span>.
-                    It
-                    is
-                    not
-                    reversible. <br>Please think again.
-                </x-modal-confirmation>
+                <x-modal-confirmation title="Confirm persistent storage deletion?" isErrorButton buttonTitle="Delete"
+                    submitAction="delete" :actions="[
+                        'The selected persistent storage/volume will be permanently deleted.',
+                        'If the persistent storage/volume is actvily used by a resource data will be lost.',
+                    ]" confirmationText="{{ $storage->name }}"
+                    confirmationLabel="Please confirm the execution of the actions by entering the Storage Name below"
+                    shortConfirmationLabel="Storage Name" step3ButtonText="Permanently Delete" />
             </div>
         @endif
     </form>

@@ -21,9 +21,8 @@ class CheckConfiguration
             "cat $proxy_path/docker-compose.yml",
         ];
         $proxy_configuration = instant_remote_process($payload, $server, false);
-
         if ($reset || ! $proxy_configuration || is_null($proxy_configuration)) {
-            $proxy_configuration = str(generate_default_proxy_configuration($server))->trim()->value;
+            $proxy_configuration = str(generate_default_proxy_configuration($server))->trim()->value();
         }
         if (! $proxy_configuration || is_null($proxy_configuration)) {
             throw new \Exception('Could not generate proxy configuration');

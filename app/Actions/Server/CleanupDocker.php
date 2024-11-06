@@ -9,28 +9,31 @@ class CleanupDocker
 {
     use AsAction;
 
-    public function handle(Server $server, bool $force = true)
+    public function handle(Server $server)
     {
+        $settings = instanceSettings();
+        $helperImageVersion = data_get($settings, 'helper_version');
+        $helperImage = config('coolify.helper_image');
+        $helperImageWithVersion = "$helperImage:$helperImageVersion";
 
-        // cleanup docker images, containers, and builder caches
-        if ($force) {
-            instant_remote_process(['docker image prune -af'], $server, false);
-            instant_remote_process(['docker container prune -f --filter "label=coolify.managed=true"'], $server, false);
-            instant_remote_process(['docker builder prune -af'], $server, false);
-        } else {
-            instant_remote_process(['docker image prune -f'], $server, false);
-            instant_remote_process(['docker container prune -f --filter "label=coolify.managed=true"'], $server, false);
-            instant_remote_process(['docker builder prune -f'], $server, false);
+        $commands = [
+            'docker container prune -f --filter "label=coolify.managed=true" --filter "label!=coolify.proxy=true"',
+            'docker image prune -af --filter "label!=coolify.managed=true"',
+            'docker builder prune -af',
+            "docker images --filter before=$helperImageWithVersion --filter reference=$helperImage | grep $helperImage | awk '{print $3}' | xargs -r docker rmi -f",
+        ];
+
+        $serverSettings = $server->settings;
+        if ($serverSettings->delete_unused_volumes) {
+            $commands[] = 'docker volume prune -af';
         }
-        // cleanup networks
-        // $networks = collectDockerNetworksByServer($server);
-        // $proxyNetworks = collectProxyDockerNetworksByServer($server);
-        // $diff = $proxyNetworks->diff($networks);
-        // if ($diff->count() > 0) {
-        //     $diff->map(function ($network) use ($server) {
-        //         instant_remote_process(["docker network disconnect $network coolify-proxy"], $server);
-        //         instant_remote_process(["docker network rm $network"], $server);
-        //     });
-        // }
+
+        if ($serverSettings->delete_unused_networks) {
+            $commands[] = 'docker network prune -f';
+        }
+
+        foreach ($commands as $command) {
+            instant_remote_process([$command], $server, false);
+        }
     }
 }

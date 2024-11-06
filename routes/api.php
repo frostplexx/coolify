@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\TeamController;
 use App\Http\Middleware\ApiAllowed;
 use App\Http\Middleware\IgnoreReadOnlyApiToken;
 use App\Http\Middleware\OnlyRootApiToken;
+use App\Jobs\PushServerUpdateJob;
+use App\Models\Server;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', [OtherController::class, 'healthcheck']);
@@ -41,6 +43,10 @@ Route::group([
     Route::get('/projects/{uuid}', [ProjectController::class, 'project_by_uuid']);
     Route::get('/projects/{uuid}/{environment_name}', [ProjectController::class, 'environment_details']);
 
+    Route::post('/projects', [ProjectController::class, 'create_project']);
+    Route::patch('/projects/{uuid}', [ProjectController::class, 'update_project']);
+    Route::delete('/projects/{uuid}', [ProjectController::class, 'delete_project']);
+
     Route::get('/security/keys', [SecurityController::class, 'keys']);
     Route::post('/security/keys', [SecurityController::class, 'create_key'])->middleware([IgnoreReadOnlyApiToken::class]);
 
@@ -56,6 +62,12 @@ Route::group([
     Route::get('/servers/{uuid}', [ServersController::class, 'server_by_uuid']);
     Route::get('/servers/{uuid}/domains', [ServersController::class, 'domains_by_server']);
     Route::get('/servers/{uuid}/resources', [ServersController::class, 'resources_by_server']);
+
+    Route::get('/servers/{uuid}/validate', [ServersController::class, 'validate_server']);
+
+    Route::post('/servers', [ServersController::class, 'create_server']);
+    Route::patch('/servers/{uuid}', [ServersController::class, 'update_server']);
+    Route::delete('/servers/{uuid}', [ServersController::class, 'delete_server']);
 
     Route::get('/resources', [ResourcesController::class, 'resources']);
 
@@ -74,8 +86,9 @@ Route::group([
     Route::get('/applications/{uuid}/envs', [ApplicationsController::class, 'envs']);
     Route::post('/applications/{uuid}/envs', [ApplicationsController::class, 'create_env'])->middleware([IgnoreReadOnlyApiToken::class]);
     Route::patch('/applications/{uuid}/envs/bulk', [ApplicationsController::class, 'create_bulk_envs'])->middleware([IgnoreReadOnlyApiToken::class]);
-    Route::patch('/applications/{uuid}/envs', [ApplicationsController::class, 'update_env_by_uuid']);
+    Route::patch('/applications/{uuid}/envs', [ApplicationsController::class, 'update_env_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
     Route::delete('/applications/{uuid}/envs/{env_uuid}', [ApplicationsController::class, 'delete_env_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
+    // Route::post('/applications/{uuid}/execute', [ApplicationsController::class, 'execute_command_by_uuid'])->middleware([OnlyRootApiToken::class]);
 
     Route::match(['get', 'post'], '/applications/{uuid}/start', [ApplicationsController::class, 'action_deploy'])->middleware([IgnoreReadOnlyApiToken::class]);
     Route::match(['get', 'post'], '/applications/{uuid}/restart', [ApplicationsController::class, 'action_restart'])->middleware([IgnoreReadOnlyApiToken::class]);
@@ -106,12 +119,43 @@ Route::group([
     // Route::patch('/services/{uuid}', [ServicesController::class, 'update_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
     Route::delete('/services/{uuid}', [ServicesController::class, 'delete_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
 
+    Route::get('/services/{uuid}/envs', [ServicesController::class, 'envs']);
+    Route::post('/services/{uuid}/envs', [ServicesController::class, 'create_env'])->middleware([IgnoreReadOnlyApiToken::class]);
+    Route::patch('/services/{uuid}/envs/bulk', [ServicesController::class, 'create_bulk_envs'])->middleware([IgnoreReadOnlyApiToken::class]);
+    Route::patch('/services/{uuid}/envs', [ServicesController::class, 'update_env_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
+    Route::delete('/services/{uuid}/envs/{env_uuid}', [ServicesController::class, 'delete_env_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
+
     Route::match(['get', 'post'], '/services/{uuid}/start', [ServicesController::class, 'action_deploy'])->middleware([IgnoreReadOnlyApiToken::class]);
     Route::match(['get', 'post'], '/services/{uuid}/restart', [ServicesController::class, 'action_restart'])->middleware([IgnoreReadOnlyApiToken::class]);
     Route::match(['get', 'post'], '/services/{uuid}/stop', [ServicesController::class, 'action_stop'])->middleware([IgnoreReadOnlyApiToken::class]);
+});
 
-    // Route::delete('/envs/{env_uuid}', [EnvironmentVariablesController::class, 'delete_env_by_uuid'])->middleware([IgnoreReadOnlyApiToken::class]);
+Route::group([
+    'prefix' => 'v1',
+], function () {
+    Route::post('/sentinel/push', function () {
+        $token = request()->header('Authorization');
+        if (! $token) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        $naked_token = str_replace('Bearer ', '', $token);
+        $decrypted = decrypt($naked_token);
+        $decrypted_token = json_decode($decrypted, true);
+        $server_uuid = data_get($decrypted_token, 'server_uuid');
+        $server = Server::where('uuid', $server_uuid)->first();
+        if (! $server) {
+            return response()->json(['message' => 'Server not found'], 404);
+        }
+        if ($server->settings->sentinel_token !== $naked_token) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        $data = request()->all();
 
+        // \App\Jobs\ServerCheckNewJob::dispatch($server, $data);
+        PushServerUpdateJob::dispatch($server, $data);
+
+        return response()->json(['message' => 'ok'], 200);
+    });
 });
 
 Route::any('/{any}', function () {

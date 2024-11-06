@@ -13,6 +13,7 @@ class ResourcesController extends Controller
         summary: 'List',
         description: 'Get all resources.',
         path: '/resources',
+        operationId: 'list-resources',
         security: [
             ['bearerAuth' => []],
         ],
@@ -52,7 +53,7 @@ class ResourcesController extends Controller
         $resources = $resources->flatten();
         $resources = $resources->map(function ($resource) {
             $payload = $resource->toArray();
-            if ($resource->getMorphClass() === 'App\Models\Service') {
+            if ($resource->getMorphClass() === \App\Models\Service::class) {
                 $payload['status'] = $resource->status();
             } else {
                 $payload['status'] = $resource->status;

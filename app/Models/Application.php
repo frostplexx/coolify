@@ -6,7 +6,10 @@ use App\Enums\ApplicationDeploymentStatus;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Process\InvokedProcess;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use OpenApi\Attributes as OA;
 use RuntimeException;
@@ -102,28 +105,49 @@ class Application extends BaseModel
 {
     use SoftDeletes;
 
+    private static $parserVersion = '4';
+
     protected $guarded = [];
+
+    protected $appends = ['server_status'];
 
     protected static function booted()
     {
         static::saving(function ($application) {
-            if ($application->fqdn == '') {
+            if ($application->fqdn === '') {
                 $application->fqdn = null;
             }
-            $application->forceFill([
-                'fqdn' => $application->fqdn,
-                'install_command' => str($application->install_command)->trim(),
-                'build_command' => str($application->build_command)->trim(),
-                'start_command' => str($application->start_command)->trim(),
-                'base_directory' => str($application->base_directory)->trim(),
-                'publish_directory' => str($application->publish_directory)->trim(),
-            ]);
+            $payload = [];
+            if ($application->isDirty('fqdn')) {
+                $payload['fqdn'] = $application->fqdn;
+            }
+            if ($application->isDirty('install_command')) {
+                $payload['install_command'] = str($application->install_command)->trim();
+            }
+            if ($application->isDirty('build_command')) {
+                $payload['build_command'] = str($application->build_command)->trim();
+            }
+            if ($application->isDirty('start_command')) {
+                $payload['start_command'] = str($application->start_command)->trim();
+            }
+            if ($application->isDirty('base_directory')) {
+                $payload['base_directory'] = str($application->base_directory)->trim();
+            }
+            if ($application->isDirty('publish_directory')) {
+                $payload['publish_directory'] = str($application->publish_directory)->trim();
+            }
+            if ($application->isDirty('status')) {
+                $payload['last_online_at'] = now();
+            }
+            if (count($payload) > 0) {
+                $application->forceFill($payload);
+            }
         });
         static::created(function ($application) {
             ApplicationSetting::create([
                 'application_id' => $application->id,
             ]);
-            $application->compose_parsing_version = '2';
+            $application->compose_parsing_version = self::$parserVersion;
             $application->save();
         });
         static::forceDeleting(function ($application) {
@@ -136,6 +160,10 @@ class Application extends BaseModel
                 $task->delete();
             }
             $application->tags()->detach();
+            $application->previews()->delete();
+            foreach ($application->deployment_queue as $deployment) {
+                $deployment->delete();
+            }
         });
     }
 
@@ -144,12 +172,64 @@ class Application extends BaseModel
         return Application::whereRelation('environment.project.team', 'id', $teamId)->orderBy('name');
     }
 
+    public function getContainersToStop(bool $previewDeployments = false): array
+    {
+        $containers = $previewDeployments
+            ? getCurrentApplicationContainerStatus($this->destination->server, $this->id, includePullrequests: true)
+            : getCurrentApplicationContainerStatus($this->destination->server, $this->id, 0);
+
+        return $containers->pluck('Names')->toArray();
+    }
+
+    public function stopContainers(array $containerNames, $server, int $timeout = 600)
+    {
+        $processes = [];
+        foreach ($containerNames as $containerName) {
+            $processes[$containerName] = $this->stopContainer($containerName, $server, $timeout);
+        }
+
+        $startTime = time();
+        while (count($processes) > 0) {
+            $finishedProcesses = array_filter($processes, function ($process) {
+                return ! $process->running();
+            });
+            foreach ($finishedProcesses as $containerName => $process) {
+                unset($processes[$containerName]);
+                $this->removeContainer($containerName, $server);
+            }
+
+            if (time() - $startTime >= $timeout) {
+                $this->forceStopRemainingContainers(array_keys($processes), $server);
+                break;
+            }
+
+            usleep(100000);
+        }
+    }
+
+    public function stopContainer(string $containerName, $server, int $timeout): InvokedProcess
+    {
+        return Process::timeout($timeout)->start("docker stop --time=$timeout $containerName");
+    }
+
+    public function removeContainer(string $containerName, $server)
+    {
+        instant_remote_process(command: ["docker rm -f $containerName"], server: $server, throwError: false);
+    }
+
+    public function forceStopRemainingContainers(array $containerNames, $server)
+    {
+        foreach ($containerNames as $containerName) {
+            instant_remote_process(command: ["docker kill $containerName"], server: $server, throwError: false);
+            $this->removeContainer($containerName, $server);
+        }
+    }
+
     public function delete_configurations()
     {
         $server = data_get($this, 'destination.server');
         $workdir = $this->workdir();
         if (str($workdir)->endsWith($this->uuid)) {
-            ray('Deleting workdir');
             instant_remote_process(['rm -rf '.$this->workdir()], $server, false);
         }
     }
@@ -158,7 +238,6 @@ class Application extends BaseModel
     {
         if ($this->build_pack === 'dockercompose') {
             $server = data_get($this, 'destination.server');
-            ray('Deleting volumes');
             instant_remote_process(["cd {$this->dirOnServer()} && docker compose down -v"], $server, false);
         } else {
             if ($persistentStorages->count() === 0) {
@@ -169,6 +248,13 @@ class Application extends BaseModel
                 instant_remote_process(["docker volume rm -f $storage->name"], $server, false);
             }
         }
+    }
+
+    public function delete_connected_networks($uuid)
+    {
+        $server = data_get($this, 'destination.server');
+        instant_remote_process(["docker network disconnect {$uuid} coolify-proxy"], $server, false);
+        instant_remote_process(["docker network rm {$uuid}"], $server, false);
     }
 
     public function additional_servers()
@@ -232,12 +318,24 @@ class Application extends BaseModel
     public function failedTaskLink($task_uuid)
     {
         if (data_get($this, 'environment.project.uuid')) {
-            return route('project.application.scheduled-tasks', [
+            $route = route('project.application.scheduled-tasks', [
                 'project_uuid' => data_get($this, 'environment.project.uuid'),
                 'environment_name' => data_get($this, 'environment.name'),
                 'application_uuid' => data_get($this, 'uuid'),
                 'task_uuid' => $task_uuid,
             ]);
+            $settings = instanceSettings();
+            if (data_get($settings, 'fqdn')) {
+                $url = Url::fromString($route);
+                $url = $url->withPort(null);
+                $fqdn = data_get($settings, 'fqdn');
+                $fqdn = str_replace(['http://', 'https://'], '', $fqdn);
+                $url = $url->withHost($fqdn);
+
+                return $url->__toString();
+            }
+
+            return $route;
         }
 
         return null;
@@ -275,11 +373,19 @@ class Application extends BaseModel
         return Attribute::make(
             get: function () {
                 if (! is_null($this->source?->html_url) && ! is_null($this->git_repository) && ! is_null($this->git_branch)) {
+                    if (str($this->git_repository)->contains('bitbucket')) {
+                        return "{$this->source->html_url}/{$this->git_repository}/src/{$this->git_branch}";
+                    }
+
                     return "{$this->source->html_url}/{$this->git_repository}/tree/{$this->git_branch}";
                 }
                 // Convert the SSH URL to HTTPS URL
                 if (strpos($this->git_repository, 'git@') === 0) {
                     $git_repository = str_replace(['git@', ':', '.git'], ['', '/', ''], $this->git_repository);
+
+                    if (str($this->git_repository)->contains('bitbucket')) {
+                        return "https://{$git_repository}/src/{$this->git_branch}";
+                    }
 
                     return "https://{$git_repository}/tree/{$this->git_branch}";
                 }
@@ -390,23 +496,6 @@ class Application extends BaseModel
         );
     }
 
-    public function dockerComposePrLocation(): Attribute
-    {
-        return Attribute::make(
-            set: function ($value) {
-                if (is_null($value) || $value === '') {
-                    return '/docker-compose.yaml';
-                } else {
-                    if ($value !== '/') {
-                        return Str::start(Str::replaceEnd('/', '', $value), '/');
-                    }
-
-                    return Str::start($value, '/');
-                }
-            }
-        );
-    }
-
     public function baseDirectory(): Attribute
     {
         return Attribute::make(
@@ -431,6 +520,11 @@ class Application extends BaseModel
         );
     }
 
+    public function isRunning()
+    {
+        return (bool) str($this->status)->startsWith('running');
+    }
+
     public function isExited()
     {
         return (bool) str($this->status)->startsWith('exited');
@@ -439,6 +533,28 @@ class Application extends BaseModel
     public function realStatus()
     {
         return $this->getRawOriginal('status');
+    }
+
+    protected function serverStatus(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                if ($this->additional_servers->count() === 0) {
+                    return $this->destination->server->isFunctional();
+                } else {
+                    $additional_servers_status = $this->additional_servers->pluck('pivot.status');
+                    $main_server_status = $this->destination->server->isFunctional();
+                    foreach ($additional_servers_status as $status) {
+                        $server_status = str($status)->before(':')->value();
+                        if ($server_status !== 'running') {
+                            return false;
+                        }
+                    }
+
+                    return $main_server_status;
+                }
+            }
+        );
     }
 
     public function status(): Attribute
@@ -612,6 +728,11 @@ class Application extends BaseModel
     public function previews()
     {
         return $this->hasMany(ApplicationPreview::class);
+    }
+
+    public function deployment_queue()
+    {
+        return $this->hasMany(ApplicationDeploymentQueue::class);
     }
 
     public function destination()
@@ -832,7 +953,7 @@ class Application extends BaseModel
             $source_html_url_host = $url['host'];
             $source_html_url_scheme = $url['scheme'];
 
-            if ($this->source->getMorphClass() == 'App\Models\GithubApp') {
+            if ($this->source->getMorphClass() === \App\Models\GithubApp::class) {
                 if ($this->source->is_public) {
                     $fullRepoUrl = "{$this->source->html_url}/{$customRepository}";
                     $git_clone_command = "{$git_clone_command} {$this->source->html_url}/{$customRepository} {$baseDir}";
@@ -991,7 +1112,7 @@ class Application extends BaseModel
         }
     }
 
-    public function parseRawCompose()
+    public function oldRawParser()
     {
         try {
             $yaml = Yaml::parse($this->docker_compose_raw);
@@ -999,6 +1120,7 @@ class Application extends BaseModel
             throw new \Exception($e->getMessage());
         }
         $services = data_get($yaml, 'services');
+
         $commands = collect([]);
         $services = collect($services)->map(function ($service) use ($commands) {
             $serviceVolumes = collect(data_get($service, 'volumes', []));
@@ -1051,9 +1173,11 @@ class Application extends BaseModel
         instant_remote_process($commands, $this->destination->server, false);
     }
 
-    public function parseCompose(int $pull_request_id = 0, ?int $preview_id = null)
+    public function parse(int $pull_request_id = 0, ?int $preview_id = null)
     {
-        if ($this->docker_compose_raw) {
+        if ((int) $this->compose_parsing_version >= 3) {
+            return newParser($this, $pull_request_id, $preview_id);
+        } elseif ($this->docker_compose_raw) {
             return parseDockerComposeFile(resource: $this, isNew: false, pull_request_id: $pull_request_id, preview_id: $preview_id);
         } else {
             return collect([]);
@@ -1066,7 +1190,7 @@ class Application extends BaseModel
         if ($isInit && $this->docker_compose_raw) {
             return;
         }
-        $uuid = new Cuid2();
+        $uuid = new Cuid2;
         ['commands' => $cloneCommand] = $this->generateGitImportCommands(deployment_uuid: $uuid, only_checkout: true, exec_in_docker: false, custom_base_dir: '.');
         $workdir = rtrim($this->base_directory, '/');
         $composeFile = $this->docker_compose_location;
@@ -1081,45 +1205,54 @@ class Application extends BaseModel
             'git read-tree -mu HEAD',
             "cat .$workdir$composeFile",
         ]);
-        $composeFileContent = instant_remote_process($commands, $this->destination->server, false);
-        if (! $composeFileContent) {
+        try {
+            $composeFileContent = instant_remote_process($commands, $this->destination->server);
+        } catch (\Exception $e) {
+            if (str($e->getMessage())->contains('No such file')) {
+                throw new \RuntimeException("Docker Compose file not found at: $workdir$composeFile<br><br>Check if you used the right extension (.yaml or .yml) in the compose file name.");
+            }
+            if (str($e->getMessage())->contains('fatal: repository') && str($e->getMessage())->contains('does not exist')) {
+                if ($this->deploymentType() === 'deploy_key') {
+                    throw new \RuntimeException('Your deploy key does not have access to the repository. Please check your deploy key and try again.');
+                }
+                throw new \RuntimeException('Repository does not exist. Please check your repository URL and try again.');
+            }
+            throw new \RuntimeException($e->getMessage());
+        } finally {
             $this->docker_compose_location = $initialDockerComposeLocation;
             $this->save();
             $commands = collect([
                 "rm -rf /tmp/{$uuid}",
             ]);
             instant_remote_process($commands, $this->destination->server, false);
-            throw new \RuntimeException("Docker Compose file not found at: $workdir$composeFile<br><br>Check if you used the right extension (.yaml or .yml) in the compose file name.");
-        } else {
+        }
+        if ($composeFileContent) {
             $this->docker_compose_raw = $composeFileContent;
             $this->save();
-        }
-
-        $commands = collect([
-            "rm -rf /tmp/{$uuid}",
-        ]);
-        instant_remote_process($commands, $this->destination->server, false);
-        $parsedServices = $this->parseCompose();
-        if ($this->docker_compose_domains) {
-            $json = collect(json_decode($this->docker_compose_domains));
-            $names = collect(data_get($parsedServices, 'services'))->keys()->toArray();
-            $jsonNames = $json->keys()->toArray();
-            $diff = array_diff($jsonNames, $names);
-            $json = $json->filter(function ($value, $key) use ($diff) {
-                return ! in_array($key, $diff);
-            });
-            if ($json) {
-                $this->docker_compose_domains = json_encode($json);
-            } else {
-                $this->docker_compose_domains = null;
+            $parsedServices = $this->parse();
+            if ($this->docker_compose_domains) {
+                $json = collect(json_decode($this->docker_compose_domains));
+                $names = collect(data_get($parsedServices, 'services'))->keys()->toArray();
+                $jsonNames = $json->keys()->toArray();
+                $diff = array_diff($jsonNames, $names);
+                $json = $json->filter(function ($value, $key) use ($diff) {
+                    return ! in_array($key, $diff);
+                });
+                if ($json) {
+                    $this->docker_compose_domains = json_encode($json);
+                } else {
+                    $this->docker_compose_domains = null;
+                }
+                $this->save();
             }
-            $this->save();
-        }
 
-        return [
-            'parsedServices' => $parsedServices,
-            'initialDockerComposeLocation' => $this->docker_compose_location,
-        ];
+            return [
+                'parsedServices' => $parsedServices,
+                'initialDockerComposeLocation' => $this->docker_compose_location,
+            ];
+        } else {
+            throw new \RuntimeException("Docker Compose file not found at: $workdir$composeFile<br><br>Check if you used the right extension (.yaml or .yml) in the compose file name.");
+        }
     }
 
     public function parseContainerLabels(?ApplicationPreview $preview = null)
@@ -1129,13 +1262,11 @@ class Application extends BaseModel
             return;
         }
         if (base64_encode(base64_decode($customLabels, true)) !== $customLabels) {
-            ray('custom_labels is not base64 encoded');
             $this->custom_labels = str($customLabels)->replace(',', "\n");
             $this->custom_labels = base64_encode($customLabels);
         }
         $customLabels = base64_decode($this->custom_labels);
         if (mb_detect_encoding($customLabels, 'ASCII', true) === false) {
-            ray('custom_labels contains non-ascii characters');
             $customLabels = str(implode('|coolify|', generateLabelsApplication($this, $preview)))->replace('|coolify|', "\n");
         }
         $this->custom_labels = base64_encode($customLabels);
@@ -1260,7 +1391,7 @@ class Application extends BaseModel
             $template = $this->preview_url_template;
             $host = $url->getHost();
             $schema = $url->getScheme();
-            $random = new Cuid2(7);
+            $random = new Cuid2;
             $preview_fqdn = str_replace('{{random}}', $random, $template);
             $preview_fqdn = str_replace('{{domain}}', $host, $preview_fqdn);
             $preview_fqdn = str_replace('{{pr_id}}', $pull_request_id, $preview_fqdn);
@@ -1283,32 +1414,114 @@ class Application extends BaseModel
         return [];
     }
 
-    public function getMetrics(int $mins = 5)
+    public function getCpuMetrics(int $mins = 5)
     {
         $server = $this->destination->server;
         $container_name = $this->uuid;
         if ($server->isMetricsEnabled()) {
             $from = now()->subMinutes($mins)->toIso8601ZuluString();
-            $metrics = instant_remote_process(["docker exec coolify-sentinel sh -c 'curl -H \"Authorization: Bearer {$server->settings->metrics_token}\" http://localhost:8888/api/container/{$container_name}/metrics/history?from=$from'"], $server, false);
+            $metrics = instant_remote_process(["docker exec coolify-sentinel sh -c 'curl -H \"Authorization: Bearer {$server->settings->sentinel_token}\" http://localhost:8888/api/container/{$container_name}/cpu/history?from=$from'"], $server, false);
             if (str($metrics)->contains('error')) {
                 $error = json_decode($metrics, true);
                 $error = data_get($error, 'error', 'Something is not okay, are you okay?');
-                if ($error == 'Unauthorized') {
+                if ($error === 'Unauthorized') {
                     $error = 'Unauthorized, please check your metrics token or restart Sentinel to set a new token.';
                 }
                 throw new \Exception($error);
             }
-            $metrics = str($metrics)->explode("\n")->skip(1)->all();
-            $parsedCollection = collect($metrics)->flatMap(function ($item) {
-                return collect(explode("\n", trim($item)))->map(function ($line) {
-                    [$time, $cpu_usage_percent, $memory_usage, $memory_usage_percent] = explode(',', trim($line));
-                    $cpu_usage_percent = number_format($cpu_usage_percent, 2);
-
-                    return [(int) $time, (float) $cpu_usage_percent, (int) $memory_usage];
-                });
+            $metrics = json_decode($metrics, true);
+            $parsedCollection = collect($metrics)->map(function ($metric) {
+                return [(int) $metric['time'], (float) $metric['percent']];
             });
 
             return $parsedCollection->toArray();
+        }
+    }
+
+    public function getMemoryMetrics(int $mins = 5)
+    {
+        $server = $this->destination->server;
+        $container_name = $this->uuid;
+        if ($server->isMetricsEnabled()) {
+            $from = now()->subMinutes($mins)->toIso8601ZuluString();
+            $metrics = instant_remote_process(["docker exec coolify-sentinel sh -c 'curl -H \"Authorization: Bearer {$server->settings->sentinel_token}\" http://localhost:8888/api/container/{$container_name}/memory/history?from=$from'"], $server, false);
+            if (str($metrics)->contains('error')) {
+                $error = json_decode($metrics, true);
+                $error = data_get($error, 'error', 'Something is not okay, are you okay?');
+                if ($error === 'Unauthorized') {
+                    $error = 'Unauthorized, please check your metrics token or restart Sentinel to set a new token.';
+                }
+                throw new \Exception($error);
+            }
+            $metrics = json_decode($metrics, true);
+            $parsedCollection = collect($metrics)->map(function ($metric) {
+                return [(int) $metric['time'], (float) $metric['used']];
+            });
+
+            return $parsedCollection->toArray();
+        }
+    }
+
+    public function generateConfig($is_json = false)
+    {
+        $config = collect([]);
+        if ($this->build_pack = 'nixpacks') {
+            $config = collect([
+                'build_pack' => 'nixpacks',
+                'docker_registry_image_name' => $this->docker_registry_image_name,
+                'docker_registry_image_tag' => $this->docker_registry_image_tag,
+                'install_command' => $this->install_command,
+                'build_command' => $this->build_command,
+                'start_command' => $this->start_command,
+                'base_directory' => $this->base_directory,
+                'publish_directory' => $this->publish_directory,
+                'custom_docker_run_options' => $this->custom_docker_run_options,
+                'ports_exposes' => $this->ports_exposes,
+                'ports_mappings' => $this->ports_mapping,
+                'settings' => collect([
+                    'is_static' => $this->settings->is_static,
+                ]),
+            ]);
+        }
+        $config = $config->filter(function ($value) {
+            return str($value)->isNotEmpty();
+        });
+        if ($is_json) {
+            return json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        }
+
+        return $config;
+    }
+
+    public function setConfig($config)
+    {
+        $validator = Validator::make(['config' => $config], [
+            'config' => 'required|json',
+        ]);
+        if ($validator->fails()) {
+            throw new \Exception('Invalid JSON format');
+        }
+        $config = json_decode($config, true);
+
+        $deepValidator = Validator::make(['config' => $config], [
+            'config.build_pack' => 'required|string',
+            'config.base_directory' => 'required|string',
+            'config.publish_directory' => 'required|string',
+            'config.ports_exposes' => 'required|string',
+            'config.settings.is_static' => 'required|boolean',
+        ]);
+        if ($deepValidator->fails()) {
+            throw new \Exception('Invalid data');
+        }
+        $config = $deepValidator->validated()['config'];
+
+        try {
+            $settings = data_get($config, 'settings', []);
+            data_forget($config, 'settings');
+            $this->update($config);
+            $this->settings()->update($settings);
+        } catch (\Exception $e) {
+            throw new \Exception('Failed to update application settings');
         }
     }
 }

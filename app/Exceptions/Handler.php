@@ -65,7 +65,7 @@ class Handler extends ExceptionHandler
             if ($e instanceof RuntimeException) {
                 return;
             }
-            $this->settings = view()->shared('instanceSettings');
+            $this->settings = instanceSettings();
             if ($this->settings->do_not_track) {
                 return;
             }
@@ -84,7 +84,6 @@ class Handler extends ExceptionHandler
             if (str($e->getMessage())->contains('No space left on device')) {
                 return;
             }
-            ray('reporting to sentry');
             Integration::captureUnhandledException($e);
         });
     }

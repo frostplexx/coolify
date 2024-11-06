@@ -4,6 +4,7 @@ namespace App\Actions\CoolifyTask;
 
 use App\Enums\ActivityTypes;
 use App\Enums\ProcessStatus;
+use App\Helpers\SshMultiplexingHelper;
 use App\Jobs\ApplicationDeploymentJob;
 use App\Models\Server;
 use Illuminate\Process\ProcessResult;
@@ -38,7 +39,6 @@ class RunRemoteProcess
      */
     public function __construct(Activity $activity, bool $hide_from_output = false, bool $ignore_errors = false, $call_event_on_finish = null, $call_event_data = null)
     {
-
         if ($activity->getExtraProperty('type') !== ActivityTypes::INLINE->value && $activity->getExtraProperty('type') !== ActivityTypes::COMMAND->value) {
             throw new \RuntimeException('Incompatible Activity to run a remote command.');
         }
@@ -124,7 +124,6 @@ class RunRemoteProcess
                     ]));
                 }
             } catch (\Throwable $e) {
-                ray($e);
             }
         }
 
@@ -137,7 +136,7 @@ class RunRemoteProcess
         $command = $this->activity->getExtraProperty('command');
         $server = Server::whereUuid($server_uuid)->firstOrFail();
 
-        return generateSshCommand($server, $command);
+        return SshMultiplexingHelper::generateSshCommand($server, $command);
     }
 
     protected function handleOutput(string $type, string $output)
